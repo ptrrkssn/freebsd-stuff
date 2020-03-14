@@ -1,0 +1,143 @@
+--- cddl/contrib/opensolaris/cmd/zpool/zpool_main.c.ORIG	2019-01-23 08:58:11.366737000 +0100
++++ cddl/contrib/opensolaris/cmd/zpool/zpool_main.c	2019-01-23 09:36:18.396007000 +0100
+@@ -243,7 +243,7 @@
+ 		    "[-R root] [-F [-n]] [-t]\n"
+ 		    "\t    [--rewind-to-checkpoint] <pool | id> [newpool]\n"));
+ 	case HELP_IOSTAT:
+-		return (gettext("\tiostat [-v] [-T d|u] [pool] ... [interval "
++		return (gettext("\tiostat [-v] [-T d|u] [-r] [-s] [pool] ... [interval "
+ 		    "[count]]\n"));
+ 	case HELP_LABELCLEAR:
+ 		return (gettext("\tlabelclear [-f] <vdev>\n"));
+@@ -2613,26 +2613,49 @@
+ 	zpool_list_t *cb_list;
+ } iostat_cbdata_t;
+ 
++
++int f_raw = B_FALSE;
++
+ static void
+ print_iostat_separator(iostat_cbdata_t *cb)
+ {
+-	int i = 0;
+-
++        int i, j;
++	static const char sep[] = "---------------------------------------";
++	
+ 	for (i = 0; i < cb->cb_namewidth; i++)
+ 		(void) printf("-");
++	for (j = 0; j < 6; j++)
++	        if (f_raw)
++	        	(void) printf("  %15.15s", sep);
++	        else
++	        	(void) printf("  %5.5s", sep);
++	(void) putchar('\n');
++#if 0	  
+ 	(void) printf("  -----  -----  -----  -----  -----  -----\n");
++#endif
+ }
+ 
+ static void
+ print_iostat_header(iostat_cbdata_t *cb)
+ {
+-	(void) printf("%*s     capacity     operations    bandwidth\n",
+-	    cb->cb_namewidth, "");
+-	(void) printf("%-*s  alloc   free   read  write   read  write\n",
+-	    cb->cb_namewidth, "pool");
++	(void) printf((f_raw ?
++		       "%*s  %31.31s    %31.31s   %31.31s\n" :
++		       "%*s  %12.12s  %12.12s  %12.12s\n"),
++		      cb->cb_namewidth, "",
++		      "capacity",
++		      "operations",
++		      "bandwidth");
++
++	(void) printf((f_raw ?
++		       "%-*s  %15.15s  %15.15s  %15.15s  %15.15s  %15.15s  %15.15s\n" :
++		       "%-*s  %5.5s  %5.5s  %5.5s  %5.5s  %5.5s  %5.5s\n"),
++		      cb->cb_namewidth, "pool",
++		      "alloc", "free", "read", "write", "read", "write");
++	
+ 	print_iostat_separator(cb);
+ }
+ 
++
+ /*
+  * Display a single statistic.
+  */
+@@ -2641,8 +2664,12 @@
+ {
+ 	char buf[64];
+ 
+-	zfs_nicenum(value, buf, sizeof (buf));
+-	(void) printf("  %5s", buf);
++	if (f_raw)
++	  (void) printf("  %15lu", value);
++	else {
++	  zfs_nicenum(value, buf, sizeof (buf));
++	  (void) printf("  %5s", buf);
++	}
+ }
+ 
+ /*
+@@ -2658,7 +2685,7 @@
+ 	uint_t c, children;
+ 	vdev_stat_t *oldvs, *newvs;
+ 	vdev_stat_t zerovs = { 0 };
+-	uint64_t tdelta;
++	uint64_t tdelta = 0;
+ 	double scale;
+ 	char *vname;
+ 
+@@ -2681,7 +2708,8 @@
+ 		(void) printf("%*s%s%*s", depth, "", name,
+ 		    (int)(cb->cb_namewidth - strlen(name) - depth), "");
+ 
+-	tdelta = newvs->vs_timestamp - oldvs->vs_timestamp;
++	if (!f_raw)
++	  tdelta = newvs->vs_timestamp - oldvs->vs_timestamp;
+ 
+ 	if (tdelta == 0)
+ 		scale = 1.0;
+@@ -2972,14 +3000,21 @@
+ 	unsigned long interval = 0, count = 0;
+ 	zpool_list_t *list;
+ 	boolean_t verbose = B_FALSE;
++	boolean_t silent = B_FALSE;
+ 	iostat_cbdata_t cb;
+ 
+ 	/* check options */
+-	while ((c = getopt(argc, argv, "T:v")) != -1) {
++	while ((c = getopt(argc, argv, "T:vrs")) != -1) {
+ 		switch (c) {
+ 		case 'T':
+ 			get_timestamp_arg(*optarg);
+ 			break;
++		case 'r':
++   		        f_raw = B_TRUE;
++		        break;
++		case 's':
++		        silent = B_TRUE;
++			break;
+ 		case 'v':
+ 			verbose = B_TRUE;
+ 			break;
+@@ -3047,7 +3082,8 @@
+ 		/*
+ 		 * If it's the first time, or verbose mode, print the header.
+ 		 */
+-		if (++cb.cb_iteration == 1 || verbose)
++		++cb.cb_iteration;
++		if (!silent && (cb.cb_iteration == 1 || verbose))
+ 			print_iostat_header(&cb);
+ 
+ 		(void) pool_list_iter(list, B_FALSE, print_iostat, &cb);
+@@ -3056,7 +3092,7 @@
+ 		 * If there's more than one pool, and we're not in verbose mode
+ 		 * (which prints a separator for us), then print a separator.
+ 		 */
+-		if (npools > 1 && !verbose)
++		if (!silent && (npools > 1 && !verbose))
+ 			print_iostat_separator(&cb);
+ 
+ 		if (verbose)

@@ -1,0 +1,121 @@
+--- sys/fs/nfsserver/nfs_nfsdport.c.ORIG	2020-03-12 00:01:59.604278000 +0100
++++ sys/fs/nfsserver/nfs_nfsdport.c	2020-03-12 00:03:15.698264000 +0100
+@@ -103,6 +103,7 @@
+ extern int nfsrv_dolocallocks;
+ extern int nfsd_enable_stringtouid;
+ extern struct nfsdevicehead nfsrv_devidhead;
++extern int nfsd_verbose_timing;
+ 
+ static void nfsrv_pnfscreate(struct vnode *, struct vattr *, struct ucred *,
+     NFSPROC_T *);
+@@ -155,6 +156,8 @@
+ static int nfsrv_pnfsgetdsattr = 1;
+ SYSCTL_INT(_vfs_nfsd, OID_AUTO, pnfsgetdsattr, CTLFLAG_RW,
+     &nfsrv_pnfsgetdsattr, 0, "When set getattr gets DS attributes via RPC");
++SYSCTL_INT(_vfs_nfsd, OID_AUTO, verbose_timing, CTLFLAG_RW, 
++    &nfsd_verbose_timing, 0, "Be verbose about slow NFS calls");
+ 
+ /*
+  * nfsrv_dsdirsize can only be increased and only when the nfsd threads are
+--- sys/fs/nfsserver/nfs_nfsdsocket.c.ORIG	2020-03-12 00:02:09.426745000 +0100
++++ sys/fs/nfsserver/nfs_nfsdsocket.c	2020-03-12 00:02:24.663988000 +0100
+@@ -407,6 +407,61 @@
+ static struct mtx nfsrvd_statmtx;
+ MTX_SYSINIT(nfsst, &nfsrvd_statmtx, "NFSstat", MTX_DEF);
+ 
++int nfsd_verbose_timing = 0;
++
++static long
++ts_delta(struct timespec *x,
++    const struct timespec *y,
++    long *res,
++    char **unit) {
++	struct timespec xb, r;
++  
++	if (!x)
++		x = &xb;
++
++	nanouptime(x);
++
++	/* Avoid overflow of r.tv_nsec */
++	if (x->tv_nsec < y->tv_nsec) {
++		x->tv_nsec += 1000000000L;
++		x->tv_sec  -= 1;
++	}
++
++	r.tv_sec  = x->tv_sec - y->tv_sec;
++	r.tv_nsec = x->tv_nsec - y->tv_nsec;
++
++	if (unit && res) {
++		if (r.tv_sec >= 240) {
++			/* More than 4 minutes -> return minutes */
++		  	*unit = "m";
++			*res = r.tv_sec / 60;
++		} else if (r.tv_sec >= 10) {
++		  	/* More than 10 seconds - return seconds */
++		  	*unit = "s";
++			*res = r.tv_sec;
++		} else if (r.tv_sec == 0) {
++		  	if (r.tv_nsec < 10000) {
++			  	/* Less than 10us - return nanoseconds */
++			  	*unit = "ns";
++				*res = r.tv_nsec;
++			} else if (r.tv_nsec < 10000000) {
++			  	/* Less than 10ms - return microseconds */
++			  	*unit = "µs";
++				*res = r.tv_nsec / 1000;
++			} else {
++			  	*unit = "ms";
++				*res = r.tv_nsec / 1000000;
++			}
++		} else {
++		  	*unit = "ms";
++			*res = r.tv_sec * 1000 + r.tv_nsec / 1000000;
++		}
++	}
++
++	/* Microseconds */
++	return r.tv_sec * 1000000 + r.tv_nsec / 1000;
++}
++
+ static void
+ nfsrvd_statstart(int op, struct bintime *now)
+ {
+@@ -482,7 +537,11 @@
+ 	mount_t mp = NULL;
+ 	struct nfsrvfh fh;
+ 	struct nfsexstuff nes;
++	struct timespec t0;
+ 
++	if (nfsd_verbose_timing)
++	  nanouptime(&t0);
++	
+ 	/*
+ 	 * Get a locked vnode for the first file handle
+ 	 */
+@@ -609,6 +668,25 @@
+ 		nd->nd_flag &= ~ND_SAVEREPLY;
+ 
+ out:
++	if (nfsd_verbose_timing) {
++	  	long dtp;
++		char *dtu = "?";
++		int majorvers = 2;
++
++		if (nd->nd_flag & ND_NFSV4)
++		  majorvers = 4;
++		else if (nd->nd_flag & ND_NFSV3)
++		  majorvers = 3;
++
++		if (ts_delta(NULL, &t0, &dtp, &dtu) > nfsd_verbose_timing)
++			printf("nfsrvd_dorpc(vers=%d.%d, uid=%d, procnum=%d, repstat=%d) took %ld %s\n",
++			    majorvers,
++			    minorvers,
++			    nd->nd_cred->cr_uid,
++			    nd->nd_procnum,
++			    nd->nd_repstat,
++			    dtp, dtu);
++	}
+ 	NFSEXITCODE2(0, nd);
+ }
+ 

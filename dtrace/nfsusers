@@ -1,0 +1,32 @@
+#!/bin/ksh
+
+LINES=20
+PERIOD=60
+
+namei_users() {
+    timeout --signal INT "${PERIOD}s" dtrace -qn 'fbt::nfsvno_namei:entry { @[args[1]->ni_cnd.cn_cred->cr_uid] = count(); }' | tail -r -"$LINES"
+    return 0
+}
+
+TMPFILE="/tmp/.nfsnamei-top.$$"
+
+cleanup() {
+    rm -f "$TMPFILE"
+}
+
+trap "cleanup" 0
+
+while true; do
+    echo "Sampling, next update at `date -v +${PERIOD}S`..."
+    namei_users >"$TMPFILE"
+    clear
+    printf "%-20s\t%s\n" "USER" "COUNT"
+    cat "$TMPFILE" | while read UID COUNT; do
+	if [ "$UID" != "" ]; then
+	    USER="`getent passwd \"$UID\" |awk -F: '{print $1}'`"
+	    printf "%-20s\t%s\n" "$USER" "$COUNT"
+	fi
+    done
+done
+
+exit 1

@@ -1,0 +1,473 @@
+diff -r -u ../sys/cddl/compat/opensolaris/kern/opensolaris_kmem.c sys/cddl/compat/opensolaris/kern/opensolaris_kmem.c
+--- ../sys/cddl/compat/opensolaris/kern/opensolaris_kmem.c	2019-12-06 15:03:42.417225000 +0100
++++ sys/cddl/compat/opensolaris/kern/opensolaris_kmem.c	2019-12-10 00:08:46.068484000 +0100
+@@ -35,6 +35,7 @@
+ #include <sys/debug.h>
+ #include <sys/mutex.h>
+ #include <sys/vmmeter.h>
++#include <sys/time.h>
+ 
+ #include <vm/vm_page.h>
+ #include <vm/vm_object.h>
+diff -r -u ../sys/cddl/contrib/opensolaris/uts/common/fs/zfs/zfs_ioctl.c sys/cddl/contrib/opensolaris/uts/common/fs/zfs/zfs_ioctl.c
+--- ../sys/cddl/contrib/opensolaris/uts/common/fs/zfs/zfs_ioctl.c	2019-12-06 15:03:41.640343000 +0100
++++ sys/cddl/contrib/opensolaris/uts/common/fs/zfs/zfs_ioctl.c	2019-12-08 00:41:47.593329000 +0100
+@@ -7098,6 +7098,9 @@
+ 		return (EBUSY);
+ 	}
+ 
++	if (verbose_shutdown)
++	  printf("ZFS is shutting down:\n");
++	
+ 	zfsdev_fini();
+ 	zvol_fini();
+ 	zfs_fini();
+diff -r -u ../sys/cddl/contrib/opensolaris/uts/common/fs/zfs/zio.c sys/cddl/contrib/opensolaris/uts/common/fs/zfs/zio.c
+--- ../sys/cddl/contrib/opensolaris/uts/common/fs/zfs/zio.c	2019-12-06 15:03:41.645437000 +0100
++++ sys/cddl/contrib/opensolaris/uts/common/fs/zfs/zio.c	2019-12-10 00:28:14.842293000 +0100
+@@ -30,6 +30,7 @@
+ #include <sys/fm/fs/zfs.h>
+ #include <sys/spa.h>
+ #include <sys/txg.h>
++#include <sys/time.h>
+ #include <sys/spa_impl.h>
+ #include <sys/vdev_impl.h>
+ #include <sys/zio_impl.h>
+@@ -59,6 +60,10 @@
+ SYSCTL_INT(_vfs_zfs_zio, OID_AUTO, exclude_metadata, CTLFLAG_RDTUN, &zio_exclude_metadata, 0,
+     "Exclude metadata buffers from dumps as well");
+ 
++static int zio_force_shutdown_cleanup = 0;
++SYSCTL_INT(_vfs_zfs_zio, OID_AUTO, force_shutdown_cleanup, CTLFLAG_RW,
++	   &zio_force_shutdown_cleanup, 0, "Force destroying ZIO caches at shutdown");
++
+ zio_trim_stats_t zio_trim_stats = {
+ 	{ "bytes",		KSTAT_DATA_UINT64,
+ 	  "Number of bytes successfully TRIMmed" },
+@@ -234,8 +239,20 @@
+ 	size_t c;
+ 	kmem_cache_t *last_cache = NULL;
+ 	kmem_cache_t *last_data_cache = NULL;
++	time_t time_last = 0;
++	
++	if (rebooting && !zio_force_shutdown_cleanup)
++		return;
+ 
+ 	for (c = 0; c < SPA_MAXBLOCKSIZE >> SPA_MINBLOCKSHIFT; c++) {
++	  	time_t t0, t1;
++		int dt;
++	  
++		if (verbose_shutdown == 1 && time_last != time_second) {
++		  	printf("%lu\r", c);
++			time_last = time_second;
++		}
++		  
+ 		if (zio_buf_cache[c] != last_cache) {
+ 			last_cache = zio_buf_cache[c];
+ 			kmem_cache_destroy(zio_buf_cache[c]);
+@@ -248,10 +265,22 @@
+ 		}
+ 		zio_data_buf_cache[c] = NULL;
+ 	}
+-
++	
++	if (verbose_shutdown == 1)
++		printf("%lu.\r", c);
++	
+ 	kmem_cache_destroy(zio_link_cache);
+-	kmem_cache_destroy(zio_cache);
+-
++	zio_link_cache = NULL;
++	
++	if (verbose_shutdown == 1)
++		printf("%lu.\r", ++c);
++	
++  	kmem_cache_destroy(zio_cache);
++	zio_cache = NULL;
++	
++	if (verbose_shutdown == 1)
++	  	printf("%lu.\n", ++c);
++	
+ 	zio_inject_fini();
+ 
+ 	if (zio_trim_ksp != NULL) {
+diff -r -u ../sys/kern/kern_shutdown.c sys/kern/kern_shutdown.c
+--- ../sys/kern/kern_shutdown.c	2019-12-06 15:03:32.530604000 +0100
++++ sys/kern/kern_shutdown.c	2019-12-10 00:13:31.121921000 +0100
+@@ -37,6 +37,8 @@
+ #include <sys/cdefs.h>
+ __FBSDID("$FreeBSD: releng/11.3/sys/kern/kern_shutdown.c 344905 2019-03-08 00:20:37Z jhb $");
+ 
++#include <sys/time.h>
++
+ #include "opt_ddb.h"
+ #include "opt_kdb.h"
+ #include "opt_panic.h"
+@@ -149,6 +151,10 @@
+ SYSCTL_INT(_kern, OID_AUTO, suspend_blocked, CTLFLAG_RW,
+ 	&suspend_blocked, 0, "Block suspend due to a pending shutdown");
+ 
++int verbose_shutdown = 0;
++SYSCTL_INT(_kern_shutdown, OID_AUTO, verbose, CTLFLAG_RW,
++	   &verbose_shutdown, 0, "Be more verbose at shutdown/reboot");
++
+ /*
+  * Variable panicstr contains argument to first call to panic; used as flag
+  * to indicate that the kernel has already called panic.
+@@ -342,6 +348,9 @@
+ {
+ 	static int once = 0;
+ 
++	if (verbose_shutdown)
++		printf("System is going down.\n");
++	
+ #if defined(SMP)
+ 	/*
+ 	 * Bind us to CPU 0 so that all shutdown code runs there.  Some
+diff -r -u ../sys/kern/vfs_subr.c sys/kern/vfs_subr.c
+--- ../sys/kern/vfs_subr.c	2019-12-06 15:03:32.540896000 +0100
++++ sys/kern/vfs_subr.c	2019-12-10 00:36:52.763506000 +0100
+@@ -41,6 +41,8 @@
+ #include <sys/cdefs.h>
+ __FBSDID("$FreeBSD: releng/11.3/sys/kern/vfs_subr.c 343434 2019-01-25 15:40:51Z tuexen $");
+ 
++#include <sys/time.h>
++
+ #include "opt_compat.h"
+ #include "opt_ddb.h"
+ #include "opt_watchdog.h"
+@@ -3932,9 +3934,15 @@
+ vfs_unmountall(void)
+ {
+ 	struct mount *mp, *tmp;
++	unsigned int n = 0;
++	time_t t0, time_last = 0;
+ 
+ 	CTR1(KTR_VFS, "%s: unmounting all filesystems", __func__);
+ 
++	if (verbose_shutdown) {
++		printf("Unmounting filesystems:\n");
++		t0 = time_second;
++	}
+ 	/*
+ 	 * Since this only runs when rebooting, it is not interlocked.
+ 	 */
+@@ -3949,10 +3957,34 @@
+ 			continue;
+ 
+ 		unmount_or_warn(mp);
++		++n;
++		
++		if (verbose_shutdown) {
++		  	if (verbose_shutdown == 1) {
++			  	if (time_last != time_second) {
++					printf("%u\r", n);
++				  	time_last = time_second;
++				}
++			} else {
++			  	printf("  %s\n", mp->mnt_stat.f_mntonname);
++			}
++		}
+ 	}
+ 
+-	if (rootdevmp != NULL)
++	if (rootdevmp != NULL) {
+ 		unmount_or_warn(rootdevmp);
++		++n;
++	}
++	
++	if (verbose_shutdown) {
++	  	int dt = time_second - t0;
++		
++	  	printf("%u filesystem%s unmounted in %d s.\n",
++		       n, n == 1 ? "" : "s", dt);
++	} else {
++	  	printf("%u filesystem%s unmounted.\n",
++		       n, n == 1 ? "" : "s");
++	}
+ }
+ 
+ /*
+diff -r -u ../sys/sys/systm.h sys/sys/systm.h
+--- ../sys/sys/systm.h	2019-12-06 15:03:33.934358000 +0100
++++ sys/sys/systm.h	2019-12-06 15:26:26.606716000 +0100
+@@ -50,6 +50,7 @@
+ extern int cold;		/* nonzero if we are doing a cold boot */
+ extern int suspend_blocked;	/* block suspend due to pending shutdown */
+ extern int rebooting;		/* kern_reboot() has been called. */
++extern int verbose_shutdown;    /* Be more verbose at shutdown */
+ extern const char *panicstr;	/* panic message */
+ extern char version[];		/* system version */
+ extern char compiler_version[];	/* compiler version */
+diff -r -u ../sys/vm/uma_core.c sys/vm/uma_core.c
+--- ../sys/vm/uma_core.c	2019-12-06 15:03:48.821793000 +0100
++++ sys/vm/uma_core.c	2019-12-10 00:38:17.079182000 +0100
+@@ -843,11 +843,34 @@
+  * Returns nothing.
+  */
+ static void
++spin(void) {
++  	static char *dials = "-\\|/";
++	static time_t time_last = 0;
++
++	if (time_last != time_second) {
++	  	printf("%c\b", dials[(unsigned int) time_last&3]);
++		time_last = time_second;
++	}
++}
++
++static void
+ keg_drain(uma_keg_t keg)
+ {
+ 	struct slabhead freeslabs = { 0 };
+ 	uma_slab_t slab, tmp;
+-
++	struct timespec t0, t1, t2, t3;
++	long dt, dtp;
++	char *dtu = "?";
++	unsigned long udt_min, udt_max;
++	unsigned long long udt_tot;
++	unsigned long n;
++
++#ifdef TIME_PMAP_REMOVE
++	t_pmap_remove = 0;
++	t_pmap_remove_min = 0;
++	t_pmap_remove_max = 0;
++	n_pmap_remove = 0;
++#endif
+ 	/*
+ 	 * We don't want to take pages from statically allocated kegs at this
+ 	 * time
+@@ -879,9 +902,85 @@
+ finished:
+ 	KEG_UNLOCK(keg);
+ 
++	if (verbose_shutdown) {
++	  	n = 0;
++		udt_tot = 0;
++		udt_min = 0;
++		udt_max = 0;
++		
++		nanouptime(&t0);
++		t2 = t0;
++	}
++	
+ 	while ((slab = SLIST_FIRST(&freeslabs)) != NULL) {
++	  	if (verbose_shutdown == 1)
++		  	spin();
++		
+ 		SLIST_REMOVE(&freeslabs, slab, uma_slab, us_hlink);
+ 		keg_free_slab(keg, slab, keg->uk_ipers);
++		
++		if (verbose_shutdown > 2) {
++		  	long udt = ts_delta(&t3, &t2, NULL, NULL);
++			t2 = t3;
++			
++			udt_tot += udt;
++		    
++			if (!udt_min || udt < udt_min)
++			  	udt_min = udt;
++				
++			if (!udt_max || udt > udt_max)
++				udt_max = udt;
++		}
++		  
++		++n;
++	}
++	
++	if (n > 0 && verbose_shutdown) {
++	  	dt = ts_delta(&t1, &t0, &dtp, &dtu);
++
++		if (verbose_shutdown >= 2) {
++		  	/* Only print kegs that take more than 100ms to destroy */
++		  	if (verbose_shutdown == 2) {
++			  	if (dt > 100000) {
++				  	printf("  %s: %lu slab%s destroyed in %ld %s\n",
++					       keg->uk_name, n, n == 1 ? "" : "s", dtp, dtu);
++#ifdef TIME_PMAP_REMOVE
++					if (n_pmap_remove > 0) {
++					  	unsigned long long avg = t_pmap_remove / n_pmap_remove;
++					
++						printf("  %s: pmap_remove: n=%lu, tot=%llu ns, min=%llu ns, avg=%llu ns, max=%llu ns\n",
++						       keg->uk_name,
++						       n_pmap_remove, t_pmap_remove,
++						       t_pmap_remove_min, avg, t_pmap_remove_max);
++					}
++#endif
++				} else
++				  spin();
++			} else if (verbose_shutdown > 2) {
++			  	unsigned long udt_avg;
++				
++				udt_avg = udt_tot/n;
++				printf("  %s: %lu slab%s destroyed in %ld %s [time per slab: min=%lu µs, avg=%lu µs, max=%lu µs]\n",
++				       keg->uk_name, n, n == 1 ? "" : "s",
++				       dtp, dtu, 
++				       udt_min, udt_avg, udt_max);
++#ifdef TIME_PMAP_REMOVE
++				if (n_pmap_remove > 0) {
++				  	unsigned long long avg = t_pmap_remove / n_pmap_remove;
++					
++					printf("  %s: pmap_remove: n=%lu, tot=%llu ns, min=%llu ns, avg=%llu ns, max=%llu ns\n",
++					       keg->uk_name,
++					       n_pmap_remove, t_pmap_remove,
++					       t_pmap_remove_min, avg, t_pmap_remove_max);
++				}
++#endif
++			}
++		} else {
++		  	/* Print warning for keys that take more than 2s to destroy */		  
++		  	if (dt >= 2000000)
++			  	printf("Notice: %s took %ld %s to destroy\n",
++				       keg->uk_name, dtp, dtu);
++		}
+ 	}
+ }
+ 
+diff -r -u ../sys/vm/vm_kern.c sys/vm/vm_kern.c
+--- ../sys/vm/vm_kern.c	2019-12-06 15:03:48.832337000 +0100
++++ sys/vm/vm_kern.c	2019-12-10 00:41:03.344940000 +0100
+@@ -381,6 +381,70 @@
+ }
+ 
+ /*
++ * Calculate the difference between two struct timespec, returns elapsed time i microseconds.
++ * Also returns the elapsed time and a unit as a string.
++ */
++long
++ts_delta(struct timespec *x,
++	 const struct timespec *y,
++	 long *res,
++	 char **unit) {
++	struct timespec xb, r;
++  
++	if (!x)
++	  	x = &xb;
++  
++	nanouptime(x);
++
++	/* Avoid overflow of r.tv_nsec */
++	if (x->tv_nsec < y->tv_nsec) {
++	  	x->tv_nsec += 1000000000L;
++		x->tv_sec  -= 1;
++	}
++
++	r.tv_sec  = x->tv_sec - y->tv_sec;
++	r.tv_nsec = x->tv_nsec - y->tv_nsec;
++  
++	if (unit && res) {
++	  	if (r.tv_sec >= 600) {
++		  	/* More than 10 minutes -> return minutes */
++		  	*unit = "m";
++			*res = r.tv_sec / 60;
++		} else if (r.tv_sec >= 10) {
++		  	/* More than 10 seconds - return seconds */
++		  	*unit = "s";
++			*res = r.tv_sec;
++		} else if (r.tv_sec == 0) {
++		  	if (r.tv_nsec <= 10000) {
++			  	/* Less than 10us - return nanoseconds */
++			  	*unit = "ns";
++				*res = r.tv_nsec;
++			} else if (r.tv_nsec <= 10000000) {
++			  	/* Less than 10ms - return microseconds */
++			  	*unit = "µs";
++				*res = r.tv_nsec / 1000;
++			} else {
++			  	*unit = "ms";
++				*res = r.tv_nsec / 1000000;
++			}
++		} else {
++		  	*unit = "ms";
++			*res = r.tv_sec * 1000 + r.tv_nsec / 1000000;
++		}
++	}
++
++	/* Microseconds */
++	return r.tv_sec * 1000000 + r.tv_nsec / 1000;
++}
++
++#ifdef TIME_PMAP_REMOVE
++unsigned long long t_pmap_remove = 0;
++unsigned long long t_pmap_remove_min = 0;
++unsigned long long t_pmap_remove_max = 0;
++unsigned long n_pmap_remove = 0;
++#endif
++
++/*
+  *	kmem_unback:
+  *
+  *	Unmap and free the physical pages underlying the specified virtual
+@@ -389,16 +453,44 @@
+  *	A physical page must exist within the specified object at each index
+  *	that is being unmapped.
+  */
++
+ void
+ kmem_unback(vm_object_t object, vm_offset_t addr, vm_size_t size)
+ {
+ 	vm_page_t m, next;
+ 	vm_offset_t end, offset;
+-
++	struct timespec x, y, r;
++	unsigned long long dt;
++	
+ 	KASSERT(object == kmem_object || object == kernel_object,
+ 	    ("kmem_unback: only supports kernel objects."));
+ 
++#ifdef TIME_PMAP_REMOVE
++	nanouptime(&y);
++#endif	
+ 	pmap_remove(kernel_pmap, addr, addr + size);
++#ifdef TIME_PMAP_REMOVE
++	nanouptime(&x);
++	
++	/* Avoid overflow of r.tv_nsec */
++	if (x.tv_nsec < y.tv_nsec) {
++	  x.tv_nsec += 1000000000L;
++	  x.tv_sec  -= 1;
++	}
++	
++	r.tv_sec  = x.tv_sec - y.tv_sec;
++	r.tv_nsec = x.tv_nsec - y.tv_nsec;
++
++	dt = r.tv_sec * 1000000000 + r.tv_nsec;
++
++	if (!t_pmap_remove_min || dt < t_pmap_remove_min)
++	  t_pmap_remove_min = dt;
++	if (!t_pmap_remove_max || dt > t_pmap_remove_max)
++	  t_pmap_remove_max = dt;
++	
++	t_pmap_remove += dt;
++	++n_pmap_remove;
++#endif	
+ 	offset = addr - VM_MIN_KERNEL_ADDRESS;
+ 	end = offset + size;
+ 	VM_OBJECT_WLOCK(object);
+@@ -417,6 +509,7 @@
+  *	Free memory allocated with kmem_malloc.  The size must match the
+  *	original allocation.
+  */
++
+ void
+ kmem_free(struct vmem *vmem, vm_offset_t addr, vm_size_t size)
+ {
+diff -r -u ../sys/vm/vm_kern.h sys/vm/vm_kern.h
+--- ../sys/vm/vm_kern.h	2019-12-06 15:03:48.829586000 +0100
++++ sys/vm/vm_kern.h	2019-12-10 00:24:43.438414000 +0100
+@@ -77,4 +77,15 @@
+ extern u_int exec_map_entries;
+ extern u_int exec_map_entry_size;
+ 
++#define TIME_PMAP_REMOVE 1
++
++extern long ts_delta(struct timespec *x, const struct timespec *y, long *res, char **unit);
++
++#ifdef TIME_PMAP_REMOVE
++extern unsigned long long t_pmap_remove;
++extern unsigned long long t_pmap_remove_min;
++extern unsigned long long t_pmap_remove_max;
++extern unsigned long n_pmap_remove;
++#endif
++
+ #endif /* _VM_VM_KERN_H_ */

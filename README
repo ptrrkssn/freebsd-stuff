@@ -1,0 +1,8 @@
+This is a collection of random FreeBSD-related stuff I'm working on.
+
+Dtrace snippets, kernel patches, utilities, documention...
+
+No guarantees for usability for anything but you're free to use
+it if you like :-)
+
+- Peter Eriksson <pen@lysator.liu.se>, 2020-03-12
