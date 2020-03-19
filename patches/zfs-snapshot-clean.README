@@ -1,0 +1,41 @@
+This patch adds a number of new command line options to 'zfs snapshot' and adds
+a 'zfs clean' command that makes it possible to handle large number of snapshots
+in a more rational way.
+
+
+EXAMPLE USAGE:
+
+  # Create snapshots (skip FS with less than 200M free space) and set an expire date in 48 hours
+  EXPIRES="`date -d 'now+48hours' '+%s'`"
+  NOW="`date +'%Y-%m-%d.%H:%M:%S'`
+  zfs snap -r -m 200M -o "se.liu.it:expires=${EXPIRES}" "POOL-A@auto-${NOW}"
+
+  # Snapshot all, but give up if it takes more than 10 minutes
+  zfs snap -r -T 10m -o "se.liu.it:expires=${EXPIRES}" "POOL-B@auto-${NOW}"
+
+  # Delete recursively (and be verbose) all expired snapshots, but give up if it takes more than 4 hours
+  zfs clean -y -r -v -e "se.liu.it:expires" -T 4h POOL-A
+
+  # Delete (and be verbose) all snapshots older than 2 weeks, no timeout, but prompt before deleting
+  zfs clean -i -v -a 2W POOL-A POOL-B
+
+
+NEW COMMAND LINE OPTIONS:
+
+  zfs snapshot
+    -v		Be more verbose
+    -T time	Set a time limit and abort (recursive snapshots) if it is exceeded
+    -m minfree	Skip taking snapshots on filesystems with less than <minfree> space available
+
+  zfs clean
+    -i		Interactive - always ask for permission before deleting
+    -y		No questions asked - assume 'yes'
+    -V level	Set the verbosity level
+    -T time	Set a time limit and abort it is exceeded
+    -a maxage	Only delete snapshots older than <maxage>
+    -e prop	Lookup up expire time (seconds) in user property <prop>
+       		and delete expired snapshots
+
+    By default, 'clean' will prompt for confirmation if more that 1 snapshot is being deleted.
+
+- Peter Eriksson <pen@lysator.liu.se>, 2020-03-19
