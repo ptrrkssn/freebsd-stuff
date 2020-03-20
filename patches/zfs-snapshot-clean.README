@@ -33,10 +33,10 @@ NEW COMMAND LINE OPTIONS:
     -y		No questions asked - assume 'yes'
     -V level	Set the verbosity level
     -T time	Set a time limit and abort it is exceeded
-    -A maxage	Only delete snapshots older than <maxage>
+    -a maxage	Only delete snapshots older than <maxage>
     -E prop	Lookup up expire time (seconds) in property <prop> and enable expiry checks
     -e          Enable expiry checks
 
-    By default, 'clean' will prompt for confirmation if more that 1 snapshot is being deleted.
+    By default, 'clean' will prompt for confirmation if more than 1 snapshot is being deleted.
 
 - Peter Eriksson <pen@lysator.liu.se>, 2020-03-20

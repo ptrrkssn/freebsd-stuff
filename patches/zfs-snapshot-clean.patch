@@ -1,5 +1,5 @@
 --- cddl/contrib/opensolaris/cmd/zfs/zfs_main.c.RELEASE	2020-02-29 22:21:01.102091000 +0100
-+++ cddl/contrib/opensolaris/cmd/zfs/zfs_main.c	2020-03-20 22:20:32.641370000 +0100
++++ cddl/contrib/opensolaris/cmd/zfs/zfs_main.c	2020-03-20 22:50:59.180653000 +0100
 @@ -88,6 +88,7 @@
  static int zfs_do_clone(int argc, char **argv);
  static int zfs_do_create(int argc, char **argv);
@@ -29,7 +29,7 @@
  		    "<filesystem|volume>@<snap>[%<snap>][,...]\n"
  		    "\tdestroy <filesystem|volume>#<bookmark>\n"));
 +	case HELP_CLEAN:
-+		return (gettext("\tclean [-iyvndfpre] [-V level] [-A age] [-E prop] [-T time] "
++		return (gettext("\tclean [-iyvndfpre] [-V level] [-a age] [-E prop] [-T time] "
 +				"<filesystem|volume> ...\n"));
  	case HELP_GET:
  		return (gettext("\tget [-rHp] [-d max] "
@@ -517,7 +517,7 @@
 +		case 'e':
 +		  	check_expire = B_TRUE;
 +			break;
-+		case 'A':
++		case 'a':
 +		  	if (str2time(optarg, &cb.cb_max_age, STR2TIME_BEFORE) < 1) {
 +				(void) fprintf(stderr,
 +				    gettext("invalid max age '%s'"), optarg ? optarg : "");
