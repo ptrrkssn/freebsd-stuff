@@ -1,48 +1,5 @@
-This patch adds a number of new command line options to 'zfs snapshot' and adds
-a 'zfs clean' command that makes it possible to handle large number of snapshots
-in a more rational way.
-
-
-EXAMPLE USAGE:
-
-  # Create snapshots (skip FS with less than 200M free space) and set an expire date in 48 hours
-  EXPIRES="`date -d 'now+48hours' '+%s'`"
-  NOW="`date +'%Y-%m-%d.%H:%M:%S'`
-  zfs snap -r -m 200M -o "se.liu.it:expires=${EXPIRES}" "POOL-A@auto-${NOW}"
-
-  # Snapshot all, but give up if it takes more than 10 minutes
-  zfs snap -r -T 10m -o "se.liu.it:expires=${EXPIRES}" "POOL-B@auto-${NOW}"
-
-  # Delete recursively (and be verbose) all expired snapshots, but give up if it takes more than 4 hours
-  zfs clean -y -r -v -e "se.liu.it:expires" -T 4h POOL-A
-
-  # Delete (and be verbose) all snapshots older than 2 weeks, no timeout, but prompt before deleting
-  zfs clean -i -v -a 2W POOL-A POOL-B
-
-
-NEW COMMAND LINE OPTIONS:
-
-  zfs snapshot
-    -v		Be more verbose
-    -T time	Set a time limit and abort (recursive snapshots) if it is exceeded
-    -m minfree	Skip taking snapshots on filesystems with less than <minfree> space available
-
-  zfs clean
-    -i		Interactive - always ask for permission before deleting
-    -y		No questions asked - assume 'yes'
-    -V level	Set the verbosity level
-    -T time	Set a time limit and abort it is exceeded
-    -a maxage	Only delete snapshots older than <maxage>
-    -e prop	Lookup up expire time (seconds) in user property <prop>
-       		and delete expired snapshots
-
-    By default, 'clean' will prompt for confirmation if more that 1 snapshot is being deleted.
-
-- Peter Eriksson <pen@lysator.liu.se>, 2020-03-19
-
-
 --- cddl/contrib/opensolaris/cmd/zfs/zfs_main.c.RELEASE	2020-02-29 22:21:01.102091000 +0100
-+++ cddl/contrib/opensolaris/cmd/zfs/zfs_main.c	2020-03-19 21:28:15.919884000 +0100
++++ cddl/contrib/opensolaris/cmd/zfs/zfs_main.c	2020-03-20 13:48:44.162754000 +0100
 @@ -88,6 +88,7 @@
  static int zfs_do_clone(int argc, char **argv);
  static int zfs_do_create(int argc, char **argv);
@@ -256,126 +213,147 @@ NEW COMMAND LINE OPTIONS:
  		err = destroy_print_snapshots(zhp, cb);
  		if (err != 0)
  			goto out;
-@@ -1266,6 +1367,118 @@
+@@ -1266,6 +1367,139 @@
  }
  
  static int
 +prompt_yesno(const char *fmt,
 +	     ...) {
-+  va_list ap;
-+  char *cp, buf[32];
++	va_list ap;
++	char *cp, buf[32];
++	int t = 0;
 +
++	fflush(stdout);
++	
++	/* Assume 'no' if no TTY to prompt user */
++	if (!isatty(fileno(stderr))) {
++		va_start(ap, fmt);
++		vfprintf(stderr, fmt, ap);
++		va_end(ap);
++		fprintf(stderr, "no\n");
++		return 0;
++	}
 +  
++	while (t++ < 3) {
++	  	if (t > 1)
++		  	fprintf(stderr,
++				"*** Please answer 'yes' or 'no'\n");
++		
++		va_start(ap, fmt);
++		vfprintf(stderr, fmt, ap);
++		va_end(ap);
++    
++		if (fgets(buf, sizeof(buf), stdin) == NULL) {
++			/* Assume 'no' if we get EOF */
++		  fputs("no\n", stderr);
++		  return 0;
++		}
++    
++		for (cp = buf+strlen(buf)-1; cp >= buf && isspace(*cp); --cp)
++			;
++		*++cp = '\0';
++		for (cp = buf; isspace(*cp); ++cp)
++			;
++		if (strcasecmp(cp, "yes") == 0)
++			return 1;
++		else if (!*cp ||
++			 strcasecmp(cp, "no") == 0 ||
++			 strcasecmp(cp, "n") == 0)
++	       		return 0;
++	}
 +
-+ AGAIN:
-+  va_start(ap, fmt);
-+  vfprintf(stderr, fmt, ap);
-+  va_end(ap);
-+  
-+  if (fgets(buf, sizeof(buf), stdin) == NULL)
-+    return -1;
-+
-+  for (cp = buf+strlen(buf)-1; cp >= buf && isspace(*cp); --cp)
-+    ;
-+  *++cp = '\0';
-+  for (cp = buf; isspace(*cp); ++cp)
-+    ;
-+  if (strcasecmp(cp, "yes") == 0)
-+    return 1;
-+  else if (!*cp || strcasecmp(cp, "no") == 0 || strcasecmp(cp, "n") == 0)
-+    return 0;
-+
-+  goto AGAIN;
++	fprintf(stderr, "*** Assuming 'no'\n");
++	return 0;
 +}
 +
 +static int
 +str2time(const char *str,
 +	 time_t *t) {
-+  char pfx = 0;
-+  int rc;
-+  time_t now;
-+  int t_year, t_mon, t_day, t_hour, t_min, t_sec;
-+  struct tm *tp;
-+
++  	char pfx = 0;
++	int rc;
++	time_t now;
++	int t_year, t_mon, t_day, t_hour, t_min, t_sec;
++	struct tm *tp;
 +  
-+  if (!str || !*str)
-+    return 0;
++	if (!str || !*str)
++		return 0;
 +
-+  while (isspace(*str))
-+    ++str;
++	while (isspace(*str))
++		++str;
 +
-+  t_year = t_mon = t_day = t_hour = t_min = t_sec = 0;
++	t_year = t_mon = t_day = t_hour = t_min = t_sec = 0;
 +  
-+  if ((rc = sscanf(str, "%d-%d-%d %d:%d:%d",
-+		   &t_year, &t_mon, &t_day, &t_hour, &t_min, &t_sec)) == 6) {
-+    /* Absolut date+time */
-+    time(&now);
-+    tp = localtime(&now);
-+    if (!tp)
-+      return -1;
++	if ((rc = sscanf(str, "%d-%d-%d %d:%d:%d",
++			 &t_year, &t_mon, &t_day,
++			 &t_hour, &t_min, &t_sec)) == 6) {
++	  /* Absolute date+time */
++	  time(&now);
++	  tp = localtime(&now);
++	  if (!tp)
++	  	return -1;
 +
-+    if (t_year >= 1900)
-+      tp->tm_year = t_year-1900;
-+    else
-+      tp->tm_year = t_year+100;
++	  if (t_year >= 1900)
++	  	tp->tm_year = t_year-1900;
++	  else
++	  	tp->tm_year = t_year+100;
 +
-+    tp->tm_mon   = t_mon-1;
-+    tp->tm_mday = t_day;
-+    tp->tm_hour = t_hour;
-+    tp->tm_min  = t_min;
-+    tp->tm_sec  = t_sec;;
++	  tp->tm_mon   = t_mon-1;
++	  tp->tm_mday = t_day;
++	  tp->tm_hour = t_hour;
++	  tp->tm_min  = t_min;
++	  tp->tm_sec  = t_sec;;
++	  
++	  *t = mktime(tp);
++	  if (*t == (time_t) -1)
++	    	return -1;
 +
-+    *t = mktime(tp);
-+    if (*t == (time_t) -1)
-+      return -1;
-+
-+    *t -= now;
-+    return 1;
++	  *t -= now;
++	  return 1;
 +    
-+  } else if ((rc = sscanf(str, "%d:%d:%d",
-+			  &t_hour, &t_min, &t_sec)) >= 2) {
-+    *t = t_sec + (t_min*60) + (t_hour*3600);
-+    return 1;
++	} else if ((rc = sscanf(str, "%d:%d:%d",
++				&t_hour, &t_min, &t_sec)) >= 2) {
++	  	*t = t_sec + (t_min*60) + (t_hour*3600);
++		return 1;
 +    
-+  } else if ((rc = sscanf(str, "%lu%c", t, &pfx)) >= 1) {
-+    /* Offset from now */
++	} else if ((rc = sscanf(str, "%lu%c", t, &pfx)) >= 1) {
++	  	/* Offset from now */
 +    
-+    switch (pfx) {
-+    case 's':
-+      break;
-+    case 'm':
-+      *t *= 60;
-+      break;
-+    case 'h':
-+      *t *= 60*60;
-+      break;
-+    case 'D':
-+      *t *= 24*60*60;
-+      break;
-+    case 'W':
-+      *t *= 7*24*60*60;
-+      break;
-+    case 'M':
-+      *t *= 30*24*60*60;
-+      break;
-+    case 'Y':
-+      *t *= 365*24*60*60;
-+      break;
-+    default:
-+      return -1;
-+    }
++	  switch (pfx) {
++	  case 's':
++	    	break;
++	  case 'm':
++	    	*t *= 60;
++		break;
++	  case 'h':
++	    	*t *= 60*60;
++		break;
++	  case 'D':
++	    	*t *= 24*60*60;
++		break;
++	  case 'W':
++	    	*t *= 7*24*60*60;
++		break;
++	  case 'M':
++	    	*t *= 30*24*60*60;
++		break;
++	  case 'Y':
++		*t *= 365*24*60*60;
++		break;
++	  default:
++	    	return -1;
++	  }
 +
-+    return 1;
-+  }
++	  return 1;
++	}
 +
-+  return (rc == 0 ? 0 : -1);
++	return (rc == 0 ? 0 : -1);
 +}
 +
 +static int
  zfs_do_destroy(int argc, char **argv)
  {
  	destroy_cbdata_t cb = { 0 };
-@@ -1496,6 +1709,243 @@
+@@ -1496,6 +1730,242 @@
  	return (rv);
  }
  
@@ -562,12 +540,11 @@ NEW COMMAND LINE OPTIONS:
 +				char buf[16];
 +	      
 +				zfs_nicenum(cb.cb_snapused, buf, sizeof (buf));
-+				rc = prompt_yesno("%s: Destroy %d snapshot%s (%s bytes) [no]? ",
++				rc = prompt_yesno("%s: Destroy %d snapshot%s (%sB) [no]? ",
 +						  fsname,
 +						  nsnaps, nsnaps == 1 ? "" : "s",
 +						  buf);
 +				if (rc != B_TRUE) {
-+					fprintf(stderr, "*** ABORTED ***\n");
 +					rv = 1;
 +					goto OUT;
 +				}
@@ -619,7 +596,7 @@ NEW COMMAND LINE OPTIONS:
  static boolean_t
  is_recvd_column(zprop_get_cbdata_t *cbp)
  {
-@@ -3677,6 +4127,9 @@
+@@ -3677,6 +4147,9 @@
  	nvlist_t *sd_nvl;
  	boolean_t sd_recursive;
  	const char *sd_snapname;
@@ -629,7 +606,7 @@ NEW COMMAND LINE OPTIONS:
  } snap_cbdata_t;
  
  static int
-@@ -3686,18 +4139,31 @@
+@@ -3686,18 +4159,31 @@
  	char *name;
  	int rv = 0;
  	int error;
@@ -667,7 +644,7 @@ NEW COMMAND LINE OPTIONS:
  
  	if (sd->sd_recursive)
  		rv = zfs_iter_filesystems(zhp, zfs_snapshot_cb, sd);
-@@ -3706,7 +4172,7 @@
+@@ -3706,7 +4192,7 @@
  }
  
  /*
@@ -676,7 +653,7 @@ NEW COMMAND LINE OPTIONS:
   *
   * Creates a snapshot with the given name.  While functionally equivalent to
   * 'zfs create', it is a separate command to differentiate intent.
-@@ -3719,23 +4185,73 @@
+@@ -3719,23 +4205,75 @@
  	nvlist_t *props;
  	snap_cbdata_t sd = { 0 };
  	boolean_t multiple_snaps = B_FALSE;
@@ -684,6 +661,8 @@ NEW COMMAND LINE OPTIONS:
 +	char pfx;
 +	unsigned long avail = 0;
 +	time_t now, timeout = 0;
++	size_t nsnaps;
++	
 +	
  	if (nvlist_alloc(&props, NV_UNIQUE_NAME, 0) != 0)
  		nomem();
@@ -752,7 +731,7 @@ NEW COMMAND LINE OPTIONS:
  		case '?':
  			(void) fprintf(stderr, gettext("invalid option '%c'\n"),
  			    optopt);
-@@ -3743,6 +4259,11 @@
+@@ -3743,6 +4281,11 @@
  		}
  	}
  
@@ -764,15 +743,25 @@ NEW COMMAND LINE OPTIONS:
  	argc -= optind;
  	argv += optind;
  
-@@ -3771,7 +4292,10 @@
+@@ -3771,9 +4314,20 @@
  			goto usage;
  	}
  
 -	ret = zfs_snapshot_nvl(g_zfs, sd.sd_nvl, props);
 +	ret = 0;
-+	if (!sd.sd_no_update && !nvlist_empty(sd.sd_nvl))
++	nsnaps = fnvlist_num_pairs(sd.sd_nvl);
++	  
++	if (!sd.sd_no_update && nsnaps > 0)
 +		ret = zfs_snapshot_nvl(g_zfs, sd.sd_nvl, props);
 +
  	nvlist_free(sd.sd_nvl);
  	nvlist_free(props);
++	
++	if (ret == 0 && sd.sd_verbose)
++		printf("Snapshots %screated: %ld\n",
++		       sd.sd_no_update ? "(NOT) " : "",
++		       nsnaps);
++	
  	if (ret != 0 && multiple_snaps)
+ 		(void) fprintf(stderr, gettext("no snapshots were created\n"));
+ 	return (ret != 0);
