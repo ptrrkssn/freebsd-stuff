@@ -25,18 +25,28 @@ NEW COMMAND LINE OPTIONS:
     -v		Be more verbose
     -T time	Set a time limit and abort (recursive snapshots) if it is exceeded
     -m minfree	Skip taking snapshots on filesystems with less than <minfree> space available
-    -E prop     Set the name of the expires prop (default: "se.liu.it:expires")
+    -E prop     Set the name of the expires prop (default: "se.liu.it:expires"), 
+       		can be a comma separated list of props
     -e time     Set the expire time
 
   zfs clean
-    -i		Interactive - always ask for permission before deleting
     -y		No questions asked - assume 'yes'
     -V level	Set the verbosity level
     -T time	Set a time limit and abort it is exceeded
     -a maxage	Only delete snapshots older than <maxage>
     -E prop	Lookup up expire time (seconds) in property <prop> and enable expiry checks
     -e          Enable expiry checks
+    -P num      If num > 0, enable <num> parallel deletion threads
+       		(Default: Do all in one go)
+    -M num      If num > 0, batch together <num> snapshots per deletion
+       		(Default: do per-filesystem deletion)
 
-    By default, 'clean' will prompt for confirmation if more than 1 snapshot is being deleted.
+By default, 'clean' will prompt for confirmation if 1  or more snapshot is being deleted.
 
-- Peter Eriksson <pen@lysator.liu.se>, 2020-03-20
+Realtive times can be suffixed with s (seconds), m (minutes), h (hours), D (days), W (weeks),
+M (months) or Y (years) or specified as "hours:minutes". Or be absolut using ISO-style dates
+(YYYY-MM-DD HH:MM:SS) where the seconds part is optional.
+
+Sizes can be suffixed with k (kilo), m (mega), g (giga) or t (tera).
+
+- Peter Eriksson <pen@lysator.liu.se>, 2020-03-23
