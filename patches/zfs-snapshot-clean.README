@@ -1,6 +1,7 @@
 This patch adds a number of new command line options to 'zfs snapshot' and adds
 a 'zfs clean' command that makes it possible to handle large number of snapshots
-in a more rational way.
+in a more rational way. Also adds a "-n" option to "zfs upgrade" and fixes a couple
+of minor bugs (also fixed in OpenZFS).
 
 
 EXAMPLE USAGE:
