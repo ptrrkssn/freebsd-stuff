@@ -30,16 +30,23 @@ NEW COMMAND LINE OPTIONS:
     -e time     Set the expire time
 
   zfs clean
+    -n          Dry-run mode
+    -v          Be verbose
+    -p          Print snapshots to delete
+    -r          Recurse
+    -d		Defer snapshot deletions
     -y		No questions asked - assume 'yes'
+    -i          Invert the matching operators (-e, -a, -M)
     -V level	Set the verbosity level
-    -T time	Set a time limit and abort it is exceeded
     -a maxage	Only delete snapshots older than <maxage>
     -E prop	Lookup up expire time (seconds) in property <prop> and enable expiry checks
     -e          Enable expiry checks
+    -M regex    Only work on snapshots (or filesystems if regex includes a '@') matching the regex.
     -P num      If num > 0, enable <num> parallel deletion threads
        		(Default: Do all in one go)
-    -M num      If num > 0, batch together <num> snapshots per deletion
+    -L num      If num > 0, batch together <num> snapshots per deletion
        		(Default: do per-filesystem deletion)
+    -T time	Set a time limit and abort it is exceeded
 
 By default, 'clean' will prompt for confirmation if 1  or more snapshot is being deleted.
 
@@ -49,4 +56,4 @@ M (months) or Y (years) or specified as "hours:minutes". Or be absolut using ISO
 
 Sizes can be suffixed with k (kilo), m (mega), g (giga) or t (tera).
 
-- Peter Eriksson <pen@lysator.liu.se>, 2020-03-23
+- Peter Eriksson <pen@lysator.liu.se>, 2020-03-24
