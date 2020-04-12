@@ -1,0 +1,45 @@
+#!/bin/sh
+#
+# iSCSI ctld daemon startup script modified for LiU
+#
+# Version 1.1 2020-03-25 Peter Eriksson
+#
+
+# PROVIDE: ctld
+# REQUIRE: FILESYSTEMS
+# BEFORE:  DAEMON
+# KEYWORD: nojail
+
+. /etc/rc.subr
+
+name="ctld"
+desc="CAM Target Layer / iSCSI target daemon"
+rcvar="ctld_enable"
+pidfile="/var/run/${name}.pid"
+command="/usr/sbin/${name}"
+required_files="/etc/ctl.conf"
+required_modules="ctl"
+extra_commands="reload"
+
+waitfor() {
+  FIRST=yes
+  while [ ! -f "/var/run/$1.done" ]; do
+      if [ $FIRST = yes ]; then
+	  echo "${name}: Waiting for '$1' to finish..."
+	  FIRST=no
+      fi
+      sleep 1
+  done
+}
+
+
+load_rc_config $name
+
+case "$1" in
+    faststart)
+	(waitfor "zfs-mount" ; run_rc_command "$1") &
+	;;
+    *)
+	run_rc_command "$1"
+	;;
+esac

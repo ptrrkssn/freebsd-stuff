@@ -18,8 +18,6 @@ required_files="/etc/exports"
 start_precmd="mountd_precmd"
 extra_commands="reload"
 
-FSLOCK=/var/run/local-filesystems.lock
-
 mountd_precmd()
 {
 	force_depend rpcbind || return 1
