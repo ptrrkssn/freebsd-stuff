@@ -1,0 +1,69 @@
+#!/bin/sh
+#
+# $FreeBSD: releng/11.3/etc/rc.d/mountd 298514 2016-04-23 16:10:54Z lme $
+#
+
+# PROVIDE: mountd
+# REQUIRE: NETWORKING rpcbind quota
+# KEYWORD: nojail shutdown
+
+. /etc/rc.subr
+
+name="mountd"
+desc="Service remote NFS mount requests"
+rcvar="mountd_enable"
+command="/usr/sbin/${name}"
+pidfile="/var/run/${name}.pid"
+required_files="/etc/exports"
+start_precmd="mountd_precmd"
+extra_commands="reload"
+
+FSLOCK=/var/run/local-filesystems.lock
+
+mountd_precmd()
+{
+	force_depend rpcbind || return 1
+
+	# mountd flags will differ depending on rc.conf settings
+	#
+	if checkyesno nfs_server_enable ; then
+		if checkyesno weak_mountd_authentication; then
+			rc_flags="${mountd_flags} -n"
+		fi
+	else
+		if checkyesno mountd_enable; then
+			checkyesno weak_mountd_authentication && rc_flags="-n"
+		fi
+	fi
+
+	if checkyesno zfs_enable; then
+		rc_flags="${rc_flags} /etc/exports /etc/zfs/exports"
+	fi
+
+	rm -f /var/db/mountdtab
+	( umask 022 ; > /var/db/mountdtab ) ||
+	    err 1 'Cannot create /var/db/mountdtab'
+}
+
+load_rc_config $name
+
+waitfor() {
+  FIRST=yes
+  while [ ! -f "/var/run/$1.done" ]; do
+      if [ $FIRST = yes ]; then
+	  echo "${name}: Waiting for '$1' to finish..."
+	  FIRST=no
+      fi
+      sleep 1
+  done
+}
+
+case "$1" in
+    faststart)
+	rm -f "/var/run/${name}.done"
+	(waitfor zfs ; run_rc_command "$1" ; touch "/var/run/${name}.done") &
+	;;
+    *)
+	run_rc_command "$1"
+	;;
+esac

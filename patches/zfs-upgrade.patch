@@ -1,0 +1,44 @@
+--- cddl/contrib/opensolaris/cmd/zfs/zfs_main.c.RELEASE	2020-02-29 22:21:01.102091000 +0100
++++ cddl/contrib/opensolaris/cmd/zfs/zfs_main.c	2020-03-24 14:32:22.296831000 +0100
+@@ -257,7 +266,7 @@
+ 		return (gettext("\tinherit [-rS] <property> "
+ 		    "<filesystem|volume|snapshot> ...\n"));
+ 	case HELP_UPGRADE:
+-		return (gettext("\tupgrade [-v]\n"
++		return (gettext("\tupgrade [-nv]\n"
+ 		    "\tupgrade [-r] [-V version] <-a | filesystem ...>\n"));
+ 	case HELP_JAIL:
+ 		return (gettext("\tjail <jailid|jailname> <filesystem>\n"));
+@@ -2140,9 +2909,10 @@
+ 	upgrade_cbdata_t cb = { 0 };
+ 	int c;
+ 	int flags = ZFS_ITER_ARGS_CAN_BE_PATHS;
+-
++	boolean_t nocheck = B_FALSE;
++	
+ 	/* check options */
+-	while ((c = getopt(argc, argv, "rvV:a")) != -1) {
++	while ((c = getopt(argc, argv, "nrvV:a")) != -1) {
+ 		switch (c) {
+ 		case 'r':
+ 			flags |= ZFS_ITER_RECURSE;
+@@ -2150,6 +2920,9 @@
+ 		case 'v':
+ 			showversions = B_TRUE;
+ 			break;
++		case 'n':
++		  	nocheck = B_TRUE;
++			break;
+ 		case 'V':
+ 			if (zfs_prop_string_to_index(ZFS_PROP_VERSION,
+ 			    optarg, &cb.cb_version) != 0) {
+@@ -2221,6 +2994,9 @@
+ 		(void) printf(gettext("This system is currently running "
+ 		    "ZFS filesystem version %llu.\n\n"), ZPL_VERSION);
+ 
++		if (nocheck)
++			return (ret);
++
+ 		flags |= ZFS_ITER_RECURSE;
+ 		ret = zfs_for_each(0, NULL, flags, ZFS_TYPE_FILESYSTEM,
+ 		    NULL, NULL, 0, upgrade_list_callback, &cb);

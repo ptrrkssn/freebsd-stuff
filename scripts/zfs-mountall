@@ -1,0 +1,69 @@
+#!/bin/ksh
+#
+# zfs-mountall - mount all filesystems in one (or many) datasets
+#
+# Author: Peter Eriksson <pen@lysator.liu.se>, 2020-04-12
+
+PATH=/sbin:/usr/sbin:/bin:/usr/bin
+export PATH
+
+VERBOSE=no
+DRYRUN=no
+
+MORE=yes
+while [ $MORE = yes ]; do
+    case "$1" in
+	-h|--help)
+	    echo "Usage: $0 [-h|--help] [-v|--verbose] [-n|--dryrun] <DATASET-1> [.. <DATASET-2>]"
+	    exit 0
+	    ;;
+	-v|--verbose)
+	    VERBOSE=yes
+	    ;;
+	-n|--dryrun)
+	    DRYRUN=yes
+	    ;;
+	-*)
+	    echo "$0: Error: $1: Invalid switch" >&2
+	    exit 1
+	    ;;
+	*)
+	    MORE=no
+	    ;;
+    esac
+    if [ $MORE = yes ]; then
+	shift
+    fi
+done
+
+DATASETS=""
+if [ "$1" = "" ]; then
+    # By default mount all filesystems from the DATASET containing the / filesystem
+    DATASETS="`df -T / | awk '($2 == \"zfs\" && $7 == \"/\") { print $1 }' | awk -F/ '{print $1}'`"
+else
+    DATASETS="$*"
+fi
+
+FLAGS=""
+if [ $VERBOSE = yes ]; then
+    FLAGS="-v"
+fi
+
+for DATASET in $DATASETS; do
+    zfs list -Hr -o name,mounted,canmount,mountpoint "$DATASET" | while read FS MOUNTED CANMOUNT DIR; do
+	if [ "$CANMOUNT" = "on" -a "$DIR" != "none" ]; then
+	    if [ $VERBOSE = yes ]; then
+		printf '%-30s %-30s mounted=%-6s\n' "$FS" "$DIR" "$MOUNTED"
+	    fi
+	    if [ "$MOUNTED" = "no" ]; then
+		if [ $DRYRUN = yes ]; then
+		    echo zfs mount $FLAGS "$FS"
+		else
+		    zfs mount $FLAGS "$FS" || exit $?
+		fi
+	    fi
+	fi
+    done
+done
+
+exit 0

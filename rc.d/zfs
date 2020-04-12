@@ -1,0 +1,78 @@
+#!/bin/sh
+#
+# Modified version of FreeBSD's /etc/rc.d/zfs startup script that
+# mounts and shares ZFS filesystems in the background
+#
+# Version 1.1 2020-03-25 Peter Eriksson
+#
+
+# PROVIDE: zfs
+# REQUIRE: mountcritlocal
+# BEFORE: FILESYSTEMS var
+
+. /etc/rc.subr
+
+name="zfs"
+desc="Mount and share ZFS datasets"
+rcvar="zfs_enable"
+start_cmd="zfs_start"
+stop_cmd="zfs_stop"
+required_modules="zfs"
+
+zfs_start_jail()
+{
+	if [ `$SYSCTL_N security.jail.mount_allowed` -eq 1 ]; then
+		zfs mount -a
+	fi
+}
+
+
+zfs_start_main()
+{
+	if [ ! -f /etc/zfs/exports ]; then
+	    touch /etc/zfs/exports
+	fi
+	rm -f /var/run/zfs*.done
+	zfs mount -va >/var/log/zfs/mount.log && touch /var/run/zfs-mount.done
+	zfs share -a  >/var/log/zfs/share.log && touch /var/run/zfs.done
+}
+
+zfs_start()
+{
+	if [ `$SYSCTL_N security.jail.jailed` -eq 1 ]; then
+		zfs_start_jail
+	else
+            # Mount all other root pool filesystems first
+            echo "Mounting root pool ZFS filesystems"
+            /sbin/zfs-mountall -v
+
+            # And then we do the rest in the background
+            echo "Mounting and sharing all other ZFS filesystems (backgrounded)"
+	    zfs_start_main &
+	fi
+}
+
+zfs_stop_jail()
+{
+	if [ `$SYSCTL_N security.jail.mount_allowed` -eq 1 ]; then
+		zfs unmount -a
+	fi
+}
+
+zfs_stop_main()
+{
+	zfs unshare -a
+	zfs unmount -a
+}
+
+zfs_stop()
+{
+	if [ `$SYSCTL_N security.jail.jailed` -eq 1 ]; then
+		zfs_stop_jail
+	else
+		zfs_stop_main
+	fi
+}
+
+load_rc_config $name
+run_rc_command "$1"

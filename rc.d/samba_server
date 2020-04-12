@@ -1,0 +1,244 @@
+#!/bin/sh
+#
+# LiU FS2017 samba_server startup script
+#
+# Version 1.1 2020-03-25 Peter Eriksson
+#
+
+# PROVIDE: samba_server
+# REQUIRE: NETWORKING SERVERS DAEMON ldconfig resolv ntpd
+# BEFORE: LOGIN
+# KEYWORD: shutdown
+#
+# Add the following lines to /etc/rc.conf.local or /etc/rc.conf
+# to enable this service:
+#
+#samba_server_enable="YES"
+#
+# You can disable/enable any of the Samba daemons by specifying:
+#samba_enable="NO"
+#nmbd_enable="NO"
+#smbd_enable="NO"
+# You need to enable winbindd separately, by adding:
+#winbindd_enable="YES"
+
+# Configuration file can be set with:
+samba_server_config="/liu/etc/samba/smb.conf"
+
+
+waitfor() {
+  FIRST=yes
+  while [ ! -f "/var/run/$1.done" ]; do
+      if [ $FIRST = yes ]; then
+	  echo "${name}: Waiting for '$1' to finish..."
+	  FIRST=no
+      fi
+      sleep 1
+  done
+}
+
+. /etc/rc.subr
+
+name="samba_server"
+rcvar=${name}_enable
+# Defaults
+samba_server_config_default="/liu/etc/samba/smb.conf"
+smbcontrol_command="/liu/bin/smbcontrol"
+# Custom commands
+extra_commands="reload status"
+
+start_precmd="samba_server_prestart"
+restart_precmd="samba_server_checkconfig"
+reload_precmd="samba_server_checkconfig"
+start_cmd="samba_server_cmd"
+stop_cmd="samba_server_cmd"
+status_cmd="samba_server_cmd"
+reload_cmd="samba_server_reload_cmd"
+rcvar_cmd="samba_server_rcvar_cmd"
+
+samba_server_checkconfig() {
+    echo -n "Performing sanity check on Samba configuration: "
+    if ${testparm_command} >/dev/null 2>&1; then
+	echo "OK"
+    else
+	echo "FAILED"
+	return 1
+    fi
+}
+
+mv_if_gt() {
+    if [ -f "$1" ]; then
+        S="`wc -c \"$1\" | awk '{print $1}'`"
+        if [ $S -gt $3 ]; then
+            mv "$1" "$2"
+        fi
+    fi
+}
+
+samba_server_prestart() {
+
+    # Force UTF-8
+    # LiU Hack 2017-12-05 Peter Eriksson
+    LC_CTYPE=en_US.UTF-8
+    export LC_CTYPE
+
+    # Always get rid of gencache.tdb & locking.tdb if >100MB - grows forever otherwise...
+    # LiU Hack 2017-12-06 Peter Eriksson
+    VARDIR="/liu/var/samba"
+    mv_if_gt "${VARDIR}/cache/gencache.tdb" "${VARDIR}/cache/gencache.tdb.OLD" 0
+    mv_if_gt "${VARDIR}/cache/netsamlogon_cache.tdb" "${VARDIR}/cache/netsamlogon_cache.tdb.OLD" 0
+    mv_if_gt "${VARDIR}/locks/locking.tdb"  "${VARDIR}/locks/locking.tdb.OLD"  100000000
+
+    # Make sure we have our RUNDIR, even if it's on a tmpfs
+    if [ -d "${samba_server_piddir}" -o ! -e "${samba_server_piddir}" ]; then
+	install -d -m 0755 "${samba_server_piddir}"
+    fi
+    # https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=200186
+    if [ -d "${samba_server_privatedir}" -o ! -e "${samba_server_privatedir}" ]; then
+	install -d -m 0700 "${samba_server_privatedir}"
+    fi
+#    # Remove smbd.pid before starting up samba(needed for s3fs)
+#    if [ -e "${samba_server_piddir}/smbd.pid" ] ; then
+#	rm -f "${samba_server_piddir}/smbd.pid"
+#    fi
+    samba_server_checkconfig
+}
+
+samba_server_rcvar_cmd() {
+    local name rcvar
+    rcvar=${name}_enable
+    # Prevent recursive calling
+    unset "${rc_arg}_cmd" "${rc_arg}_precmd" "${rc_arg}_postcmd"
+    # Check master variable
+    run_rc_command "${_rc_prefix}${rc_arg}" ${rc_extra_args}
+    # Check dependent variables
+    for name in ${samba_daemons}; do
+	# XXX
+	rcvars=''; v=''
+	rcvar=${name}_enable
+	run_rc_command "${_rc_prefix}${rc_arg}" ${rc_extra_args}
+    done
+}
+
+samba_server_reload_cmd() {
+    local name rcvar command pidfile force_run
+    # Prevent recursive calling
+    unset "${rc_arg}_cmd" "${rc_arg}_precmd" "${rc_arg}_postcmd"
+    # Ignore rcvar and run command
+    if [ -n "${_rc_prefix}" -a "${_rc_prefix}" = "one" ] || [ -n "${rc_force}" ] || [ -n "${rc_fast}" ]; then
+	force_run=yes
+    fi
+    # Apply to all daemons
+    for name in ${samba_daemons}; do
+	rcvar=${name}_enable
+	command="/liu/sbin/${name}"
+	pidfile="${samba_server_piddir}/${name}.pid"
+	# Daemon should be enabled and running
+	if ( [ -n "${rcvar}" ] && checkyesno "${rcvar}" ) || [ -n "$force_run" ]; then
+	    if [ -n "$(check_pidfile "${pidfile}" "${command}")" ]; then
+		debug "reloading ${name} configuration"
+		echo "Reloading ${name}."
+		${smbcontrol_command} "${name}" 'reload-config' ${command_args} >/dev/null 2>&1
+	    fi
+	fi
+    done
+}
+
+samba_server_cmd() {
+    local name rcvar rcvars v command pidfile samba_daemons result force_run
+    # Prevent recursive calling
+    unset "${rc_arg}_cmd" "${rc_arg}_precmd" "${rc_arg}_postcmd"
+    # Stop processes in the reverse order
+    if [ "${rc_arg}" = "stop" ] ; then
+	samba_daemons=$(reverse_list ${samba_daemons})
+    fi
+    # Ignore rcvar and run command
+    if [ -n "${_rc_prefix}" -a "${_rc_prefix}" = "one" ] || [ -n "${rc_force}" ] || [ -n "${rc_fast}" ]; then
+	force_run=yes
+    fi
+
+    # Assume success
+    result=0
+    # Apply to all daemons
+    for name in ${samba_daemons}; do
+	# XXX
+	rcvars=''; v=''
+	rcvar=${name}_enable
+	command="/liu/sbin/${name}"
+	pidfile="${samba_server_piddir}/${name}.pid"
+	# Daemon should be enabled and running
+	if ( [ -n "${rcvar}" ] && checkyesno "${rcvar}" ) || [ -n "$force_run" ]; then
+	    if [ "${rc_arg}" = "start" -a "${name}" = "smbd" ]; then
+	    	(waitfor "zfs-mount" ; run_rc_command "${_rc_prefix}${rc_arg}" ${rc_extra_args}) &
+	    else
+		run_rc_command "${_rc_prefix}${rc_arg}" ${rc_extra_args}
+		# If any of the commands failed, take it as a global result
+		result=$((${result} || $?))
+	    fi
+	fi
+    done
+    return ${result}
+}
+
+samba_server_config_init() {
+    local name
+    # Load configuration
+    load_rc_config "${name}"
+    # Defaults
+    samba_server_enable=${samba_server_enable:=NO}
+    samba_server_config=${samba_server_config=${samba_server_config_default}}
+    samba_server_configfile_arg=${samba_server_config:+--configfile="${samba_server_config}"}			#"
+    #testparm_command="/liu/bin/samba-tool testparm --suppress-prompt --verbose ${samba_server_configfile_arg}"
+    testparm_command="/liu/bin/testparm --suppress-prompt --verbose ${samba_server_config}"
+    # Determine what daemons are necessary to run Samba in the current role
+    samba_server_role=$(${testparm_command} --parameter-name='server role' 2>/dev/null)
+    case "${samba_server_role}" in
+	active\ directory\ domain\ controller)
+	    samba_daemons="samba"
+	    ;;
+	auto|*)
+	    samba_daemons="nmbd smbd winbindd"
+	    ;;
+    esac
+    # Load daemons configuration
+    for name in ${samba_daemons}; do
+	load_rc_config "${name}"
+	# If samba_server_enable is 'YES'
+	if [ -n "${rcvar}" ] && checkyesno "${rcvar}"; then
+	    if [ "${name}" != "winbindd" ]; then
+		# Set variable to 'YES' only if it is unset
+		eval ${name}_enable=\${${name}_enable-YES}
+	    else
+		# Winbindd
+		samba_server_idmap=$(${testparm_command} --parameter-name='idmap uid' 2>/dev/null)
+		if [ -n "${samba_server_idmap}" ]; then
+		    winbindd_enable="YES"
+		fi
+	    fi
+	fi
+	# If variable is empty, set it to 'NO'
+	eval ${name}_enable=\${${name}_enable:-NO}
+    done
+    # Fetch parameters from configuration file
+    samba_server_lockdir="$(${testparm_command} --parameter-name='lock directory' 2>/dev/null)"
+    samba_server_lockdir=${samba_server_lockdir:=/liu/var/samba/locks}
+    samba_server_piddir="$(${testparm_command} --parameter-name='pid directory' 2>/dev/null)"
+    samba_server_piddir=${samba_server_piddir:=/liu/var/samba/run}
+    samba_server_privatedir="$(${testparm_command} --parameter-name='private dir' 2>/dev/null)"
+    samba_server_privatedir=${samba_server_privatedir:=/liu/etc/samba/private}
+}
+
+# Load configuration variables
+samba_server_config_init
+# Common flags
+command_args=${samba_server_configfile_arg}
+samba_flags=${samba_flags="--daemon"}
+nmbd_flags=${nmbd_flags="--daemon"}
+smbd_flags=${smbd_flags="--daemon"}
+winbindd_flags=${winbindd_flags="--daemon"}
+# Requirements
+required_files="${samba_server_config}"
+required_dirs="${samba_server_lockdir}"
+
+
+run_rc_command "$1"
